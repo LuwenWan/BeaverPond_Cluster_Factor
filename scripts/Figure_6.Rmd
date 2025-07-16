@@ -1,0 +1,234 @@
+---
+title: "Study area"
+author: "Luwen Wan"
+date: "2024-10-27"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+
+```{r}
+# Load necessary libraries
+rm(list = ls())
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(ggspatial)  # Load the ggspatial library for scale bar and north arrow
+library(grid)
+library(cowplot)
+library(units)
+library(purrr)
+library(ggrepel)  # For smart label placement
+
+outfig <- "H:/My Drive/Manuscript/BeavePond_westernUS/Figs"
+```
+
+# load data 
+```{r}
+boundaries <- st_read("H:/My Drive/Data/GIS_Data/Downloaded/Tiger/tl_2017_us_state/tl_2017_us_state.shp")
+
+names(boundaries)
+# Load US boundaries and filter for the lower 48 states only
+us_boundaries <- st_read("H:/My Drive/Data/GIS_Data/Downloaded/Tiger/tl_2017_us_state/tl_2017_us_state.shp") %>%
+  filter(!NAME %in% c("Alaska", 
+                      "Hawaii", 
+                      "Puerto Rico",
+                      "Commonwealth of the Northern Mariana Islands",
+                      "District of Columbia",
+                      "United States Virgin Islands",
+                      "American Samoa",
+                      "West Virginia",
+                      "Guam"))
+
+# load ecoregion and eeager polygon
+ecoregions <- st_read("H:/My Drive/Data/GIS_Data/Downloaded/Ecoregions/NA_CEC_Eco_Level3/NA_CEC_Eco_Level3.shp")
+
+# Load EEAGER Polygon 
+eeager_area <- st_read("H:/My Drive/Projects/Beavers/Data/EEAGER_Fairfax_2023/Processed/EEAGER_GEEapp_Polygons.shp")
+
+# load laramie polygon 
+laramie_area <- st_read("H:/My Drive/Projects/Beavers/Data/BeaverDamCatalog/DamTraces_20240617_processed/Laramie_study_area/Laramie_study_area.shp")
+# crs 
+albers_crs <- st_crs("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs")
+
+us_boundaries <- st_transform(us_boundaries, crs = albers_crs)
+ecoregions <- st_transform(ecoregions, crs = albers_crs)
+eeager_area <- st_transform(eeager_area, crs = albers_crs)
+laramie_area <- st_transform(laramie_area, crs = albers_crs)
+```
+
+# study area 
+```{r}
+# some EEAGER polygons were excluded 
+names(eeager_area)
+study_area <- eeager_area %>% 
+  select(-any_of("Shape_Area")) %>% 
+  filter(Name != "I") %>%  # channel dams 
+  filter(Name != "L") # 2017 - mapped but not ideal
+
+# Increase the size of the study area polygons by applying a buffer (e.g., 0.05 degrees or meters depending on CRS)
+# Adjust the buffer size based on your CRS and desired visibility
+```
+
+# buffer study area 
+```{r}
+names(study_area)
+study_area_simplified <- study_area %>% 
+  dplyr::select(Name,Shape_Leng,geometry) %>%
+  dplyr::mutate(Name = if_else(Name == "Outline of Study Area", "M", Name))
+
+st_crs(study_area_simplified)  #Albers Equal Area, unit is meters, so don't need to reproject before applying the buffer 
+st_geometry_type(study_area_simplified) # polygon and linestring
+study_area_buffered <- st_buffer(study_area_simplified, dist = 20000) # 30,000 meters buffer
+```
+
+## ecoregion III
+```{r}
+# Filter and prepare ecoregions by NA_L3CODE
+ecoregions <- ecoregions %>% 
+  filter(!is.na(NA_L3NAME)) %>% 
+  mutate(NA_L3NAME = as.factor(NA_L3NAME))
+
+# Filter ecoregions to only those containing the study area
+ecoregions_filtered <- ecoregions %>%
+  st_filter(study_area, .predicate = st_intersects)
+
+# Create a new column combining NA_L3NAME and NA_L3CODE
+ecoregions_filtered <- ecoregions_filtered %>%
+  mutate(Name_Code = paste0(NA_L3NAME, " (", NA_L3CODE, ")"))
+
+```
+
+## state boundary 
+```{r}
+# Define the states to highlight
+highlight_states <- c("Oregon", "Wyoming", "Montana", "Colorado")
+# Create a new layer with only the highlighted states
+highlighted_states <- us_boundaries %>%
+  filter(NAME %in% highlight_states)
+
+highlighted_states_centroids <- st_centroid(highlighted_states)
+```
+
+## deal with the order of legend 
+```{r}
+# Add a new fill category to ecoregions_filtered
+ecoregions_filtered <- ecoregions_filtered %>%
+  mutate(Fill_Category = as.character(Name_Code))
+
+# Add a new fill category to study_area_buffered
+study_area_buffered <- study_area_buffered %>%
+  mutate(Fill_Category = "Study Areas")
+
+# Combine into a single dataframe (optional)
+combined_data <- bind_rows(
+  ecoregions_filtered %>% select(Fill_Category, geometry),
+  study_area_buffered %>% select(Fill_Category, geometry)
+)
+
+# Define the desired order of fill categories
+desired_order <- c("Study Areas", "Wyoming Basin (10.1.4)","Northwestern Glaciated Plains (9.3.1)",
+                   "Canadian Rockies (6.2.4)","Eastern Cascades Slopes and Foothills (6.2.8)",
+                   "Southern Rockies (6.2.14)")
+                   
+# Apply the factor with the desired order
+combined_data <- combined_data %>%
+  mutate(Fill_Category = factor(Fill_Category, levels = desired_order))
+
+ecoregion_colors <- c(
+  "Wyoming Basin (10.1.4)" = "#e78ac3",    
+  "Northwestern Glaciated Plains (9.3.1)" = "#a6d854",  
+  "Southern Rockies (6.2.14)" = "#fc8d62",  
+  "Canadian Rockies (6.2.4)" = "#8da0cb",   
+  "Eastern Cascades Slopes and Foothills (6.2.8)" = "#66c2a5" 
+)
+
+# Combine colors, placing "Study Area" first
+combined_colors <- c("Study Areas" = "black", ecoregion_colors)
+
+```
+
+# study area map 
+```{r}
+# Split layers
+ecoregions_layer <- combined_data %>% 
+  filter(Fill_Category != "Study Areas") %>%
+  mutate(Legend_Category = Fill_Category)
+
+study_area_layer <- combined_data %>% 
+  filter(Fill_Category == "Study Areas") %>%
+  mutate(Legend_Category = "Study Areas")
+
+# Define colors
+combined_colors <- c(
+  "Study Areas" = "black",
+  "Canadian Rockies (6.2.4)" = "#8da0cb",
+  "Wyoming Basin (10.1.4)" = "#e78ac3",
+  "Eastern Cascades Slopes and Foothills (6.2.8)" = "#66c2a5",
+  "Northwestern Glaciated Plains (9.3.1)" = "#a6d854",
+  "Southern Rockies (6.2.14)" = "#fc8d62"
+)
+
+# Plot
+ggplot() +
+  # Base layers
+  geom_sf(data = us_boundaries, color = "gray40", fill = "gray95") +
+  geom_sf(data = highlighted_states, fill = "gray80") + 
+  
+  # Ecoregions as filled polygons
+  geom_sf(data = ecoregions_layer, aes(fill = Legend_Category), color = NA) +
+  
+  # Study areas as points (centroids)
+  geom_sf(
+    data = study_area_layer %>% st_centroid(),
+    aes(fill = Legend_Category),
+    shape = 21,  # filled circle
+    size = 2,
+    stroke = 0.2,
+    color = "black"
+  ) +
+  
+  # State labels
+  geom_sf_text(data = highlighted_states_centroids, aes(label = STUSPS),
+               size = 5, fontface = "bold", hjust = 0, nudge_x = 0.2) +
+  
+  # Unified fill legend
+  scale_fill_manual(
+    name = NULL,
+    values = combined_colors,
+    breaks = names(combined_colors),  # explicit order
+    guide = guide_legend(
+      ncol = 2,
+      byrow = TRUE,
+      override.aes = list(
+        shape = c(21, rep(22, 5)),                 # 21: circle for Study Areas, 22: square for others
+        size = c(3, rep(5, 5)),                    # smaller for Study Area
+        color = c("black", rep(NA, 5)),            # outline only for Study Area
+        fill = c("black", combined_colors[-1])     # correct fill colors
+    ))) +
+  
+  # Layout
+  annotation_scale(location = "bl") +
+  annotation_north_arrow(location = "tr", which_north = "true",
+                         style = north_arrow_fancy_orienteering) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.spacing.y = unit(0.2, "cm"),
+    legend.text = element_text(size = 10),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.key.height = unit(0.1, "in"),  
+    legend.key.width = unit(0.1, "in")
+  )
+```
+
+```{r}
+ggsave(paste0(outfig,"/study_area_map_color2_update1.png"), plot = last_plot(), width = 6.5, height = 6, units = "in", dpi = 600)
+ggsave(paste0(outfig,"/study_area_map_color2_update1.pdf"), plot = last_plot(), width = 6.5, height = 6, units = "in", dpi = 600)
+```

@@ -1,0 +1,157 @@
+---
+title: "Distribution of beaver pond area across level III ecoregions"
+author: "Luwen Wan"
+date: "2024-11-12"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+
+```{r}
+# remove everything and restart 
+rm(list = ls())
+library(ggplot2)
+library(sf)
+library(dplyr)
+library(tidyr)
+library(viridis)
+library(ggpubr)
+library(Metrics)
+library(ggpmisc)
+library(ggrepel)
+library(ggpubr) # for stat_compare_means
+library(ggrepel) # provides functions to automatically adjust label positions to prevent overlap
+library(readr)
+library(ggspatial)
+library(mgcv) 
+
+formula <- y ~ x # needed for ggpmisc's equation and R2 text
+# Define the Albers Equal Area Conic CRS appropriate for CONUS
+albers_crs <- st_crs("+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs")
+
+indir <- "H:/My Drive/Projects/Beavers/Beaver_EarthEngine/BeaverPonds"
+outdir <- "H:/My Drive/Projects/Beavers/Beaver_EarthEngine/BeaverPonds/OutFigs"
+outfig <- "H:/My Drive/Manuscript/BeavePond_westernUS/Figs"
+```
+
+# 3.0 start here - save to save time 
+```{r}
+# save(pond_polygon_eco_cluster, file = paste0(outdir,"/pond_polygon_eco_cluster.RData"))
+load(paste0(outdir,"/pond_polygon_eco_cluster.RData"))
+pond_polygon_eco_cluster_df <- st_drop_geometry(pond_polygon_eco_cluster)
+```
+
+
+# 3. plot ponds in ecoregions 
+## 3.0 pond and ecoregion for table S1
+```{r}
+names(pond_polygon_eco_cluster_df)
+pond_eco <- pond_polygon_eco_cluster_df[,c("FolderPath","Name","NA_L3CODE","NA_L3NAME")]
+pond_eco_unique <- unique(pond_eco)
+
+level_dam <- pond_polygon_eco_cluster_df[,c("DamID","pondsAream2","NA_L3CODE","NA_L3NAME")]
+level_dam_unique <- unique(level_dam)
+```
+
+## 3.3 level III ecoregion (US or NA is the same)
+```{r}
+# Define ecoregion colors with descriptive names including codes
+ecoregion_colors <- c(
+  "Wyoming Basin (10.1.4)" = "#e78ac3",    
+  "Northwestern Glaciated Plains (9.3.1)" = "#a6d854",  
+  "Southern Rockies (6.2.14)" = "#fc8d62",  
+  "Canadian Rockies (6.2.4)" = "#8da0cb",   
+  "Eastern Cascades Slopes and Foothills (6.2.8)" = "#66c2a5" 
+)
+
+# Update ecoregion labels to include both name and code
+ecoregion_labels <- c(
+  "10.1.4" = "Wyoming Basin (10.1.4)",
+  "9.3.1" = "Northwestern Glaciated Plains (9.3.1)",
+  "6.2.14" = "Southern Rockies (6.2.14)",
+  "6.2.4" = "Canadian Rockies (6.2.4)",
+  "6.2.8" = "Eastern Cascades Slopes and Foothills (6.2.8)"
+)
+
+# Add updated Ecoregion column to level_dam_unique
+level_dam_unique$Ecoregion <- factor(
+  level_dam_unique$NA_L3CODE,
+  levels = names(ecoregion_labels),
+  labels = ecoregion_labels
+)
+
+# Precompute group statistics including Ecoregion
+group_stats <- level_dam_unique %>%
+  group_by(NA_L3CODE, Ecoregion) %>%
+  summarise(
+    Nb = n(),
+    Mean = mean(log10(pondsAream2)),
+    Median = median(log10(pondsAream2)),
+    Max = max(log10(pondsAream2))  # Get the max value for positioning
+  )
+
+# Create the plot with updated legend and no violin outline
+# Updated legend positioning and style
+ggplot(level_dam_unique, aes(x = NA_L3CODE, y = log10(pondsAream2), fill = Ecoregion)) +
+  geom_violin() +  # Remove outline with `color = NA`
+  geom_boxplot(width = 0.06, outlier.shape = NA, fill = "white") +
+  labs(
+    title = "Distribution of beaver pond area across level III ecoregions",
+    # x = "Ecoregion",
+    y = "Log10 of pond area (m²)"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_text(size = 10),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),  # Remove legend title
+    legend.text = element_text(size = 10),
+    legend.position = "bottom", # Position legend below the plot
+    legend.box = "horizontal"  # Arrange legend horizontally 
+  ) +
+  guides(fill = guide_legend(nrow = 3, byrow = TRUE)) + 
+  # scale_fill_manual(values = ecoregion_colors) +
+  scale_fill_manual(
+    values = ecoregion_colors,
+    breaks = c(
+      "Canadian Rockies (6.2.4)",
+      "Eastern Cascades Slopes and Foothills (6.2.8)",
+      "Southern Rockies (6.2.14)",
+      "Northwestern Glaciated Plains (9.3.1)",
+      "Wyoming Basin (10.1.4)"
+    )
+  ) +
+  geom_text(
+    data = group_stats,
+    aes(x = NA_L3CODE, y = Max + 0.2, label = paste("n =", Nb)),
+    color = "black", vjust = 0, size = 4
+  ) +
+  geom_signif(
+    comparisons = list(c("9.3.1", "6.2.14")),
+    map_signif_level = TRUE,
+    y_position = max(log10(level_dam_unique$pondsAream2)) * 1.05,
+    tip_length = 0.02,
+    textsize = 4
+  ) +
+  ylim(NA, max(log10(level_dam_unique$pondsAream2)) * 1.2) 
+
+
+```
+
+## 3.4. save plot - ecoregion 
+
+```{r}
+fname <- paste0(outfig,'/ecoregion_level_III.png'); fname
+ggsave(filename = fname, plot = last_plot(), dpi = 600, width = 6.5, units = 'in')
+```
+
+
+
+
+
