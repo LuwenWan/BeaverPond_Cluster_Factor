@@ -2,7 +2,9 @@
 title: "Study area"
 author: "Luwen Wan"
 date: "2024-10-27"
-output: html_document
+output:
+  html_document:
+    self_contained: true
 editor_options: 
   chunk_output_type: console
 ---
@@ -17,17 +19,13 @@ rm(list = ls())
 library(sf)
 library(ggplot2)
 library(dplyr)
-library(ggspatial)  # Load the ggspatial library for scale bar and north arrow
-library(grid)
-library(cowplot)
-library(units)
-library(purrr)
-library(ggrepel)  # For smart label placement
+library(ggspatial)
+library(ggrepel)
 
 outfig <- "H:/My Drive/Manuscript/BeavePond_westernUS/Figs"
 ```
 
-# load data 
+# 1. load data 
 ```{r}
 boundaries <- st_read("H:/My Drive/Data/GIS_Data/Downloaded/Tiger/tl_2017_us_state/tl_2017_us_state.shp")
 
@@ -61,7 +59,7 @@ eeager_area <- st_transform(eeager_area, crs = albers_crs)
 laramie_area <- st_transform(laramie_area, crs = albers_crs)
 ```
 
-# study area 
+# 2. study area 
 ```{r}
 # some EEAGER polygons were excluded 
 names(eeager_area)
@@ -74,7 +72,7 @@ study_area <- eeager_area %>%
 # Adjust the buffer size based on your CRS and desired visibility
 ```
 
-# buffer study area 
+# 3. buffer study area 
 ```{r}
 names(study_area)
 study_area_simplified <- study_area %>% 
@@ -86,7 +84,7 @@ st_geometry_type(study_area_simplified) # polygon and linestring
 study_area_buffered <- st_buffer(study_area_simplified, dist = 20000) # 30,000 meters buffer
 ```
 
-## ecoregion III
+# 4. ecoregion III
 ```{r}
 # Filter and prepare ecoregions by NA_L3CODE
 ecoregions <- ecoregions %>% 
@@ -103,7 +101,7 @@ ecoregions_filtered <- ecoregions_filtered %>%
 
 ```
 
-## state boundary 
+# 5. state boundary 
 ```{r}
 # Define the states to highlight
 highlight_states <- c("Oregon", "Wyoming", "Montana", "Colorado")
@@ -114,7 +112,7 @@ highlighted_states <- us_boundaries %>%
 highlighted_states_centroids <- st_centroid(highlighted_states)
 ```
 
-## deal with the order of legend 
+# 6. deal with the order of legend 
 ```{r}
 # Add a new fill category to ecoregions_filtered
 ecoregions_filtered <- ecoregions_filtered %>%
@@ -152,7 +150,7 @@ combined_colors <- c("Study Areas" = "black", ecoregion_colors)
 
 ```
 
-# study area map 
+# 7. study area map 
 ```{r}
 # Split layers
 ecoregions_layer <- combined_data %>% 
@@ -229,6 +227,5 @@ ggplot() +
 ```
 
 ```{r}
-ggsave(paste0(outfig,"/study_area_map_color2_update1.png"), plot = last_plot(), width = 6.5, height = 6, units = "in", dpi = 600)
-ggsave(paste0(outfig,"/study_area_map_color2_update1.pdf"), plot = last_plot(), width = 6.5, height = 6, units = "in", dpi = 600)
+# ggsave(paste0(outfig,"/study_area_map_color2_update1.png"), plot = last_plot(), width = 6.5, height = 6, units = "in", dpi = 600)
 ```

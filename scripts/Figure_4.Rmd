@@ -1,0 +1,533 @@
+---
+title: "Pond clusters"
+author: "Luwen Wan"
+date: "2024-06-18"
+output:
+  html_document:
+    self_contained: true
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r}
+rm(list = ls())
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(mgcv)
+library(car)
+library(ggpubr)
+library(gridExtra)
+library(GGally)
+library(e1071)
+library(tidyr)
+
+# Assuming `gam_pond_simplified` is your fitted GAM model
+outdir <- "H:/My Drive/Projects/Beavers/Beaver_EarthEngine/RFanalysis_clusters/outputs"
+outfig <- "H:/My Drive/Manuscript/BeavePond_westernUS/Figs"
+```
+
+```{r}
+load(paste0(outdir,"/merged_pond_var_update.RData"))
+
+names(merged_pond_var_update)
+merged_pond_var <- merged_pond_var_update # in seek of convenience 
+
+names(merged_pond_var)
+
+# change name 
+names(merged_pond_var) <- c("ClusterID","ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength","PondArea")
+
+merged_pond_var_select <- merged_pond_var[,c("ClusterID","WoodyHeight","SPImedian","DamLength","PondArea")]
+
+```
+
+# 1.  Variable data checking 
+## 1.1 sixteen predictors distribution 
+```{r}
+predictors_all <- merged_pond_var[,c("ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength")]
+
+# wide to long format 
+predictors_all_long <- predictors_all %>%
+  pivot_longer(
+    cols = c("ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength"),  
+    names_to = c("Variable"),  # New column names
+    values_to = "Value"  # Name of the new value column
+  )
+
+# Manually set the order of the facets
+predictors_all_long$Variable <- factor(predictors_all_long$Variable, 
+                                       levels = c("ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength"))
+
+# remove cluster ID
+names(merged_pond_var)
+merged_pond_allx_y <- merged_pond_var[,c("ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength","PondArea")]
+
+```
+
+# 2. VIF (Variance Inflation Factor)
+## 2.1 VIF, all < 10
+necessary for  both linear and non-linear models when your goal is to explore which factors are impacting ponding size and interpret individual predictors.
+```{r}
+# VIF is less critical if goal is pure prediction 
+names(merged_pond_allx_y)
+
+merged_pond_allx_y$log_PondArea <- log(merged_pond_allx_y$PondArea) # natural logarithms
+names(merged_pond_allx_y)
+
+lm_model <- lm(PondArea ~ ., data = merged_pond_allx_y)
+vif_values <- vif(lm_model)
+vif_values_df <- as.data.frame(vif_values)
+print(vif_values)
+
+# unselect pond area as we use log of pond area
+merged_pond_allx_logY <- merged_pond_allx_y[,c("ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength","log_PondArea")]
+lm_model_log <- lm(log_PondArea ~ ., data = merged_pond_allx_logY)
+vif_values_log <- vif(lm_model_log)
+vif_values_log <- as.data.frame(vif_values_log)
+```
+
+# 3. normalization 
+## 3.1 min-max normalization (0-100) - allow more intuitive comparision about which factors is more important 
+```{r}
+# Use scaled predictors if their magnitudes differ significantly.
+# Define the min-max normalization function to scale data to 0-100
+normalize_0_100 <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)) * 100)
+}
+
+# Separate the response variable and predictors
+names(merged_pond_allx_logY)
+response <- merged_pond_allx_logY$log_PondArea
+predictors <- merged_pond_allx_logY[, !(names(merged_pond_allx_logY) %in% "log_PondArea")]
+names(predictors)
+
+# Apply the min-max normalization to scale the predictors to 0-100
+scaled_predictors_0_100 <- as.data.frame(lapply(predictors, normalize_0_100))
+
+# Combine the scaled predictors with the original response variable
+merged_pond_allx_logY_scaled_0_100 <- cbind(scaled_predictors_0_100, log_PondArea = response)
+
+# View the resulting dataframe
+names(merged_pond_allx_logY_scaled_0_100)
+head(merged_pond_allx_logY_scaled_0_100)
+
+# for convenience 
+pondFinal <- merged_pond_allx_logY_scaled_0_100
+
+sum(is.na(pondFinal))  # Should be 0 after na.omit if previously handled
+
+```
+
+# 4. Pond Generalized Additive Models (GAM) 
+## 4.1 Model 1a - full pond model 
+```{r}
+# Fit the refined GAM without the interaction term
+names(pondFinal)
+gam_pond <- gam(
+  log_PondArea ~ 
+    s(ClayMedian) + 
+    s(ThetasMedian) + 
+    s(WoodyCover) + 
+    s(WoodyHeight) + 
+    s(FlowlineLength) + 
+    s(MainChannelSlope)+
+    s(ValleyBottWidth) + 
+    s(UPA) + 
+    s(CTImax) + 
+    s(SPImedian) + 
+    s(STImedian) + 
+    s(SummerTempMax) + 
+    s(SpringPrecip) + 
+    s(AnnualPrecip) + 
+    s(SWEMarchMax) + 
+    s(DamLength),
+  data = pondFinal,
+  method = "REML"
+)
+
+# Summarize the refined model
+summary(gam_pond)
+```
+
+## 4.2 model 1b - simplified pond model 
+```{r}
+# Simplifying a GAM by retaining only the significant factors helps improve interpretability while maintaining predictive power. 
+# Refit the GAM with significant predictors
+gam_pond_simplified <- gam(
+  log_PondArea ~ 
+    s(WoodyHeight) + 
+    s(DamLength) + 
+    s(SPImedian),
+  data = pondFinal,
+  method = "REML"
+)
+
+# Summarize the refined model
+summary(gam_pond_simplified)
+# plot(gam_pond_simplified, pages = 1, se = TRUE)
+
+AIC(gam_pond, gam_pond_simplified) 
+
+
+# Plotting all smooth terms and residuals
+# par(mfrow = c(2, 2))
+# plot(gam_pond_simplified, pages = 1, shade = TRUE, seWithMean = TRUE)
+
+# gam.check(gam_pond_simplified)
+# Your model has successfully converged using the REML method with the Outer Newton optimizer. The small gradient values and positive definite Hessian indicate a stable and reliable solution. The full model rank confirms that all predictors contribute uniquely without redundancy.
+
+predicted <- predict(gam_pond_simplified, newdata = pondFinal, type = "response")
+# plot(gam_pond_simplified, pages = 1, se = TRUE)
+```
+
+### 4.2.0 importance order 
+```{r}
+# Extract the summary from the model
+gam_pond_simplified_summary <- summary(gam_pond_simplified)
+
+# Extract the relevant data for each smooth term
+edf <- gam_pond_simplified_summary$s.table[, "edf"]
+f_value <- gam_pond_simplified_summary$s.table[, "F"]
+p_value <- gam_pond_simplified_summary$s.table[, "p-value"]
+
+# Generate significance levels based on p-values
+significance <- ifelse(p_value < 0.001, "***", 
+                       ifelse(p_value < 0.01, "**", 
+                              ifelse(p_value < 0.05, "*", 
+                                     ifelse(p_value < 0.1, ".", " "))))
+
+# Create a data frame with predictor names, EDF, F-values, and significance levels
+importance_df_pond  <- data.frame(
+  Predictor = rownames(gam_pond_simplified_summary$s.table),
+  F_value = f_value,
+  EDF = edf,
+  Significance = significance
+)
+
+pond_order <- ggplot(importance_df_pond, aes(x = reorder(Predictor, F_value), y = F_value)) +
+  geom_bar(stat = "identity", fill = "#0070FF", width = 0.5) +
+  coord_flip() +
+  geom_text(aes(label = paste("EDF =", round(EDF, 2), Significance)), hjust = 1, size = 3) +
+  labs(title = "(a) Factor contributions to log-transformed pond area", 
+     # x = "Predictor", 
+     y = "F-value") +
+  theme_bw(base_size = 12) +
+  scale_y_continuous(trans = "log1p") +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.title.y = element_blank())
+
+```
+ 
+## 4.3 model 1c - reduced pond model 
+```{r}
+names(pondFinal)
+# Fit the refined GAM without the interaction term
+gam_model_noDam <- gam(
+  log_PondArea ~ 
+    s(ClayMedian) + 
+    s(ThetasMedian) + 
+    s(WoodyCover) + 
+    s(WoodyHeight) + 
+    s(FlowlineLength) + 
+    s(MainChannelSlope) + 
+    s(ValleyBottWidth) + 
+    s(UPA) + 
+    s(CTImax) + 
+    s(SPImedian) + 
+    s(STImedian) + 
+    s(SummerTempMax) + 
+    s(SpringPrecip) + 
+    s(AnnualPrecip) + 
+    s(SWEMarchMax),
+  data = pondFinal,
+  method = "REML"
+)
+
+# Summarize the refined model
+summary(gam_model_noDam)
+
+```
+
+# 5. Dam GAM 
+```{r}
+# log dam length 
+names(merged_pond_allx_y)
+# Calculate skewness for DamLenMcluster
+skewness_value <- skewness(merged_pond_allx_y$DamLength, na.rm = TRUE)
+print(paste("Skewness of Dam Length: ", skewness_value))
+merged_pond_allx_y$log_DamLength <- log(merged_pond_allx_y$DamLength)
+
+# Separate the response variable and predictors
+response <- merged_pond_allx_y$log_DamLength
+names(merged_pond_allx_y)
+predictors <- merged_pond_allx_y[, !(names(merged_pond_allx_y) %in% c("DamLength","log_DamLength",
+                                                                      "PondArea","log_PondArea"))]
+names(predictors)
+# Apply the min-max normalization to scale the predictors to 0-100
+scaled_predictors_0_100 <- as.data.frame(lapply(predictors, normalize_0_100))
+
+# Combine the scaled predictors with the original response variable
+merged_pond_allx_logY_scaled_0_100 <- cbind(scaled_predictors_0_100, log_DamLength = response)
+
+# View the resulting dataframe
+head(merged_pond_allx_logY_scaled_0_100)
+
+  # # Linear regression using scaled predictors
+  # model_normalize <- lm(log_DamLength ~ ., data = merged_pond_allx_logY_scaled_0_100)
+  # 
+  # # Summary of the model
+  # summary(model_normalize)
+
+# Fit the GAM with log-transformed dam length
+names(merged_pond_allx_logY_scaled_0_100)
+
+# for convenience 
+damFinal <- merged_pond_allx_logY_scaled_0_100
+
+sum(is.na(damFinal))  # Should be 0 after na.omit if previously handled
+```
+
+## 5.1 model2a - full dam gam
+```{r}
+# linear 
+# Linear regression using scaled predictors
+lm_dam <- lm(log_DamLength ~ ., data = damFinal)
+
+# Summary of the model
+summary(lm_dam)
+
+# gam 
+gam_dam <- gam(
+  log_DamLength ~ 
+    s(ClayMedian) + 
+    s(ThetasMedian) + 
+    s(WoodyCover) + 
+    s(WoodyHeight) + 
+    s(FlowlineLength) + 
+    s(MainChannelSlope) + 
+    s(ValleyBottWidth) + 
+    s(UPA) + 
+    s(CTImax) + 
+    s(SPImedian) + 
+    s(STImedian) + 
+    s(SummerTempMax) + 
+    s(SpringPrecip) + 
+    s(AnnualPrecip) + 
+    s(SWEMarchMax),
+  data = damFinal,
+  method = "REML"
+)
+
+# Summarize the transformed model
+summary(gam_dam)
+
+# AIC and BIC
+AIC(lm_dam, gam_dam) # gam should be chosen 
+BIC(lm_dam, gam_dam) # difference is 1 BIC has a stronger emphasis on simplicity.
+```
+
+## 5.2 model2b - simplified dam gam 
+```{r}
+# Fit a Generalized Additive Model (GAM) with log-transformed dam length
+# using significant predictors
+gam_dam_simplified <- gam(
+  log_DamLength ~ 
+    s(ClayMedian) + 
+    s(FlowlineLength) + 
+    s(MainChannelSlope) + 
+    s(ValleyBottWidth) + 
+    s(UPA) + 
+    s(CTImax) + 
+    s(AnnualPrecip),
+  data = damFinal,
+  method = "REML"
+)
+
+# Summarize the transformed model
+summary(gam_dam_simplified)
+```
+
+
+## 5.3 model 2c- interactive dam GAM 
+### 5.3.1 test 
+```{r}
+model_data <- model.frame(gam_dam_simplified)
+summary(gam_dam_simplified)
+
+gam_test <- gam(
+  log_DamLength ~ 
+    s(ClayMedian) + 
+    s(FlowlineLength) + 
+    ti(ClayMedian,FlowlineLength),
+  family = gaussian(), 
+  method = "REML", 
+  data = damFinal
+)
+
+# Print model summary
+summary(gam_test)
+
+# Print all terms in s.table
+print(rownames(summary(gam_test)$s.table))
+
+# Extract interaction term values manually
+interaction_index <- which(rownames(summary(gam_test)$s.table) == "ti(ClayMedian,FlowlineLength)")
+
+if (length(interaction_index) > 0) {
+  interaction_row <- summary(gam_test)$s.table[interaction_index, ]
+  print(interaction_row)  # Check the actual values for edf, F, and p-value
+} else {
+  print("Interaction term not found in model summary.")
+}
+
+```
+
+### 5.3.2 Loop Through Interactions
+### 5.3.3 gam final with significant (p_value < 0.1) interactions 
+```{r}
+gam_final <- gam(
+  log_DamLength ~ 
+    s(ClayMedian) + 
+    s(FlowlineLength) + 
+    s(MainChannelSlope) + 
+    s(ValleyBottWidth) + 
+    s(UPA) + 
+    s(CTImax) + 
+    s(AnnualPrecip) + 
+    ti(ClayMedian,UPA) + 
+    ti(ClayMedian,AnnualPrecip) + 
+    ti(FlowlineLength,MainChannelSlope) + 
+    ti(ValleyBottWidth,CTImax),
+  family = gaussian(), 
+  method = "REML", 
+  data = damFinal
+)
+
+# Print summary
+summary(gam_final)
+
+# ti(ClayMedian, UPA) and ti(FlowlineLength, MainChannelSlope) are NOT significant, could be removed 
+# Keep the simplified interaction model (gam_final_refined), which includes only significant interactions (ti(ClayMedian, AnnualPrecip) and ti(ValleyBottWidth, CTImax)).
+
+interactive_dam_gam <- gam(
+  log_DamLength ~ 
+    s(ClayMedian) + 
+    s(FlowlineLength) + 
+    s(MainChannelSlope) + 
+    s(ValleyBottWidth) + 
+    s(UPA) + 
+    s(CTImax) + 
+    s(AnnualPrecip) + 
+    ti(ClayMedian,AnnualPrecip) + 
+    ti(ValleyBottWidth,CTImax),
+  family = gaussian(), 
+  method = "REML", 
+  data = damFinal
+)
+
+summary(interactive_dam_gam)
+```
+
+
+### 5.3.7 model2c - interactive dam gam - dam order 
+```{r}
+# Summarize the transformed model
+summary(interactive_dam_gam)
+
+# Extract the summary from the model
+gam_summary <- summary(interactive_dam_gam)
+
+# Extract the relevant data for each smooth term
+edf <- gam_summary$s.table[, "edf"]
+f_value <- gam_summary$s.table[, "F"]
+p_value <- gam_summary$s.table[, "p-value"]
+
+# Generate significance levels based on p-values
+significance <- ifelse(p_value < 0.001, "***", 
+                       ifelse(p_value < 0.01, "**", 
+                              ifelse(p_value < 0.05, "*", 
+                                     ifelse(p_value < 0.1, ".", " "))))
+
+# Create a data frame with predictor names, EDF, F-values, and significance levels
+importance_df <- data.frame(
+  Predictor = rownames(gam_summary$s.table),
+  F_value = f_value,
+  EDF = edf,
+  Significance = significance
+)
+
+# Print the importance dataframe for verification
+print(importance_df)
+
+# Plot predictor importance from highest to lowest, with significance levels and EDF
+dam_order <- ggplot(importance_df, aes(x = reorder(Predictor, F_value), y = F_value)) +
+  geom_bar(stat = "identity", fill = "#ff8f00",width = 0.5) +
+  coord_flip() +
+  geom_text(aes(label = paste("EDF =", round(EDF, 2), Significance)), hjust = 1, size = 3) +
+  labs(title = "(b) Factor contributions to log-transformed dam length", 
+     # x = "Predictor", 
+     y = "F-value") +
+  theme_bw(base_size = 12) +
+  scale_y_continuous(trans = "log1p") +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.title.y = element_blank())
+
+```
+
+# 4&5. merge pond and dam order 
+```{r}
+# pond order from summary(gam_pond_simplified)
+# dam order from summary(interactive_dam_gam)
+
+x_limit <- c(0, 35)  # Set a consistent range across both plots
+# Aligning plots with discrete scales
+pond_order_aligned <- pond_order + 
+  coord_flip() +  # Flip coordinates for horizontal bars
+  theme(
+    plot.margin = unit(c(5, 5, 5, 5), "pt")  # Add consistent plot margins
+  )
+
+dam_order_aligned <- dam_order + 
+  coord_flip() +  # Flip coordinates for horizontal bars
+  theme(
+    plot.margin = unit(c(5, 5, 5, 5), "pt")  # Add consistent plot margins
+  )
+
+
+combined_plot <- plot_grid(
+  pond_order_aligned, 
+  dam_order_aligned, 
+  ncol = 1,                 # Arrange in a single column
+  rel_heights = c(3, 7),    # Proportional heights
+  align = "v"               # Align vertically
+)
+
+# Print or save the combined plot
+print(combined_plot)
+
+```
+
+```{r}
+# Save the plot
+# fname <- paste0(outfig, '/var_importance_update.png')
+# ggsave(filename = fname, plot = combined_plot, dpi = 600, width = 7, units = 'in')
+```

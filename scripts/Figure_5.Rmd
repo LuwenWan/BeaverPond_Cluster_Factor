@@ -1,0 +1,498 @@
+---
+title: "Pond partial effects with crossing"
+author: "Luwen Wan"
+date: "2024-06-18"
+output:
+  html_document:
+    self_contained: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r}
+rm(list = ls())
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(mgcv)
+library(car)
+library(ggpubr)
+library(gridExtra)
+library(GGally)
+library(e1071)
+library(tidyr)
+
+# Assuming `gam_pond_simplified` is your fitted GAM model
+outdir <- "H:/My Drive/Projects/Beavers/Beaver_EarthEngine/RFanalysis_clusters/outputs"
+outfig <- "H:/My Drive/Manuscript/BeavePond_westernUS/Figs"
+```
+
+```{r}
+load(paste0(outdir,"/merged_pond_var_update.RData"))
+
+names(merged_pond_var_update)
+merged_pond_var <- merged_pond_var_update # in seek of convenience 
+
+names(merged_pond_var)
+
+# change name 
+names(merged_pond_var) <- c("ClusterID","ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength","PondArea")
+
+merged_pond_var_select <- merged_pond_var[,c("ClusterID","WoodyHeight","SPImedian","DamLength","PondArea")]
+
+```
+
+# 1.  Variable data checking 
+## 1.1 sixteen predictors distribution 
+```{r}
+predictors_all <- merged_pond_var[,c("ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength")]
+
+# wide to long format 
+predictors_all_long <- predictors_all %>%
+  pivot_longer(
+    cols = c("ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength"),  
+    names_to = c("Variable"),  # New column names
+    values_to = "Value"  # Name of the new value column
+  )
+
+# Manually set the order of the facets
+predictors_all_long$Variable <- factor(predictors_all_long$Variable, 
+                                       levels = c("ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength"))
+
+# remove cluster ID
+names(merged_pond_var)
+merged_pond_allx_y <- merged_pond_var[,c("ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength","PondArea")]
+
+```
+
+# 2. VIF (Variance Inflation Factor)
+## 2.1 VIF, all < 10
+necessary for  both linear and non-linear models when your goal is to explore which factors are impacting ponding size and interpret individual predictors.
+```{r}
+# VIF is less critical if goal is pure prediction 
+names(merged_pond_allx_y)
+
+merged_pond_allx_y$log_PondArea <- log(merged_pond_allx_y$PondArea) # natural logarithms
+names(merged_pond_allx_y)
+
+lm_model <- lm(PondArea ~ ., data = merged_pond_allx_y)
+vif_values <- vif(lm_model)
+vif_values_df <- as.data.frame(vif_values)
+
+# unselect pond area as we use log of pond area
+merged_pond_allx_logY <- merged_pond_allx_y[,c("ClayMedian","ThetasMedian","WoodyCover","WoodyHeight","FlowlineLength",
+                                         "MainChannelSlope","ValleyBottWidth","UPA","CTImax","SPImedian",
+                                         "STImedian","SummerTempMax","SpringPrecip","AnnualPrecip","SWEMarchMax","DamLength","log_PondArea")]
+lm_model_log <- lm(log_PondArea ~ ., data = merged_pond_allx_logY)
+vif_values_log <- vif(lm_model_log)
+vif_values_log <- as.data.frame(vif_values_log)
+```
+
+# 3. normalization 
+## 3.1 min-max normalization (0-100) - allow more intuitive comparision about which factors is more important 
+```{r}
+# Use scaled predictors if their magnitudes differ significantly.
+# Define the min-max normalization function to scale data to 0-100
+normalize_0_100 <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)) * 100)
+}
+
+# Separate the response variable and predictors
+names(merged_pond_allx_logY)
+response <- merged_pond_allx_logY$log_PondArea
+predictors <- merged_pond_allx_logY[, !(names(merged_pond_allx_logY) %in% "log_PondArea")]
+names(predictors)
+
+# Apply the min-max normalization to scale the predictors to 0-100
+scaled_predictors_0_100 <- as.data.frame(lapply(predictors, normalize_0_100))
+
+# Combine the scaled predictors with the original response variable
+merged_pond_allx_logY_scaled_0_100 <- cbind(scaled_predictors_0_100, log_PondArea = response)
+
+# View the resulting dataframe
+names(merged_pond_allx_logY_scaled_0_100)
+head(merged_pond_allx_logY_scaled_0_100)
+
+# for convenience 
+pondFinal <- merged_pond_allx_logY_scaled_0_100
+
+sum(is.na(pondFinal))  # Should be 0 after na.omit if previously handled
+
+```
+
+# 4. Pond Generalized Additive Models (GAM) 
+
+## 4.2 model 1b - simplified pond model 
+```{r}
+# Simplifying a GAM by retaining only the significant factors helps improve interpretability while maintaining predictive power. 
+# Refit the GAM with significant predictors
+gam_pond_simplified <- gam(
+  log_PondArea ~ 
+    s(WoodyHeight) + 
+    s(DamLength) + 
+    s(SPImedian),
+  data = pondFinal,
+  method = "REML"
+)
+
+# Summarize the refined model
+summary(gam_pond_simplified)
+# plot(gam_pond_simplified, pages = 1, se = TRUE)
+
+# Plotting all smooth terms and residuals
+# par(mfrow = c(2, 2))
+# plot(gam_pond_simplified, pages = 1, shade = TRUE, seWithMean = TRUE)
+
+# gam.check(gam_pond_simplified)
+# Your model has successfully converged using the REML method with the Outer Newton optimizer. The small gradient values and positive definite Hessian indicate a stable and reliable solution. The full model rank confirms that all predictors contribute uniquely without redundancy.
+
+predicted <- predict(gam_pond_simplified, newdata = pondFinal, type = "response")
+# plot(gam_pond_simplified, pages = 1, se = TRUE)
+```
+
+
+
+# 6. Partial Effect 
+  <!-- ### 6.1.1 PE Plots with scaled value - 3 panels -->
+  <!-- ```{r} -->
+  <!-- # The y-axis (.estimate) represents the estimated smooth effect of that predictor on the response variable. This effect is the result of applying the smooth term fitted by the Generalized Additive Model (GAM). -->
+  
+  <!-- # Extract smooth effects for each term -->
+  <!-- woody_height_df <- gratia::smooth_estimates(gam_pond_simplified, select = "s(WoodyHeight)") -->
+  <!-- dam_length_df <- gratia::smooth_estimates(gam_pond_simplified, select = "s(DamLength)") -->
+  <!-- spi_median_df <- gratia::smooth_estimates(gam_pond_simplified, select = "s(SPImedian)") -->
+  
+  <!-- # Create partial effect plots using ggplot2 and theme_bw -->
+  <!-- p1 <- ggplot(woody_height_df, aes(x = WoodyHeight, y = .estimate)) + -->
+  <!--   geom_line(color = "blue") + -->
+  <!--   geom_ribbon(aes(ymin = .estimate - 2 * .se, ymax = .estimate + 2 * .se), alpha = 0.2, fill = "blue") + -->
+  <!--   labs(title = "Partial Effect of Woody Height", x = "Woody Height", y = "Partial Effect") + -->
+  <!--   theme_bw() -->
+  <!-- p1 -->
+  
+  <!-- p2 <- ggplot(dam_length_df, aes(x = DamLength, y = .estimate)) + -->
+  <!--   geom_line(color = "green") + -->
+  <!--   geom_ribbon(aes(ymin = .estimate - 2 * .se, ymax = .estimate + 2 * .se), alpha = 0.2, fill = "green") + -->
+  <!--   labs(title = "Partial Effect of Dam Length", x = "Dam Length (m)", y = "Partial Effect") + -->
+  <!--   theme_bw() -->
+  <!-- p2 -->
+  <!-- p3 <- ggplot(spi_median_df, aes(x = SPImedian, y = .estimate)) + -->
+  <!--   geom_line(color = "red") + -->
+  <!--   geom_ribbon(aes(ymin = .estimate - 2 * .se, ymax = .estimate + 2 * .se), alpha = 0.2, fill = "red") + -->
+  <!--   labs(title = "Partial Effect of SPI Median", x = "SPI Median", y = "Partial Effect") + -->
+  <!--   theme_bw() -->
+  
+  <!-- # Display the plots together in a single column layout -->
+  <!-- grid.arrange(p1, p2, p3, nrow = 3) -->
+  <!-- ``` -->
+
+## 6.1 PE Plots with original value
+```{r}
+# Extract partial effect data
+woody_height_df <- gratia::smooth_estimates(gam_pond_simplified, smooth = "s(WoodyHeight)")
+dam_length_df <- gratia::smooth_estimates(gam_pond_simplified, smooth = "s(DamLength)")
+spi_median_df <- gratia::smooth_estimates(gam_pond_simplified, smooth = "s(SPImedian)")
+
+# Partial Effect of Dam Length
+# Define a function to plot partial effects
+plot_partial_effect <- function(df, variable_name, color, title, x_label) {
+  ggplot(df, aes(x = .data[[variable_name]], y = .estimate)) +
+    geom_line(color = color, linewidth = 1) +
+    geom_ribbon(aes(ymin = .estimate - 2 * .se, ymax = .estimate + 2 * .se), alpha = 0.2, fill = color) +
+    labs(title = title, x = x_label, y = "Partial Effect") +
+    theme_bw()
+}
+
+# Generate partial effect plots
+p1 <- plot_partial_effect(woody_height_df, "WoodyHeight", "green", "(a) Woody Height", "Woody Height (m)")
+p2 <- plot_partial_effect(dam_length_df, "DamLength", "blue", "(b) Dam Length", "Dam Length (m)")
+p3 <- plot_partial_effect(spi_median_df, "SPImedian", "red", "(c) SPI Median", "SPI Median")
+
+# Display plots
+# grid.arrange(p1, p2, p3, nrow = 1)
+
+# test plot f
+predictors <- merged_pond_allx_logY[, c("WoodyHeight", "DamLength", "SPImedian")]
+
+# Correct computation of min and max values
+min_values <- sapply(predictors, function(x) min(x, na.rm = TRUE))
+max_values <- sapply(predictors, function(x) max(x, na.rm = TRUE))
+
+print(min_values)
+print(max_values)
+
+back_transform_0_100 <- function(scaled, min_val, max_val) {
+  return ((scaled / 100) * (max_val - min_val) + min_val)
+}
+
+# Define colors for each predictor
+colors <- c("WoodyHeight" = "green", "DamLength" = "blue", "SPImedian" = "red")
+# colors <- c("WoodyHeight" = "#4daf4a", "DamLength" = "#377eb8", "SPImedian" = "#e41a1c")
+line_types <- c("dashed", "dashed", "dashed")
+
+# Partial effect plot for DamLength
+dam_length_df$DamLength_original <- back_transform_0_100(
+  scaled = dam_length_df$DamLength,
+  min_val = min_values["DamLength"],
+  max_val = max_values["DamLength"]
+)
+names(dam_length_df)
+
+p1 <- ggplot(dam_length_df, aes(x = DamLength_original, y = .estimate)) +
+  geom_line(color = colors["DamLength"],linetype = "dashed", linewidth = 1) +
+  geom_ribbon(aes(ymin = .estimate - 2 * .se, ymax = .estimate + 2 * .se),
+              alpha = 0.2, fill = colors["DamLength"]) +
+  labs(title = "Partial effects of significant predictors on log-transformed pond area",
+       x = "Dam Length (m)") +
+   theme_bw(base_size = 10) +
+   theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(),
+    axis.text = element_text()
+  ) +
+  annotate("text", x = -Inf, y = Inf, label = "(a)", hjust = -1, vjust = 2, size = 4)
+
+# Partial effect plot for SPImedian
+spi_median_df$SPImedian_original <- back_transform_0_100(
+  scaled = spi_median_df$SPImedian,
+  min_val = min_values["SPImedian"],
+  max_val = max_values["SPImedian"]
+)
+
+p2 <- ggplot(spi_median_df, aes(x = SPImedian_original, y = .estimate)) +
+  geom_line(color = colors["SPImedian"],linetype = "dashed", linewidth = 1) +
+  geom_ribbon(aes(ymin = .estimate - 2 * .se, ymax = .estimate + 2 * .se),
+              alpha = 0.2, fill = colors["SPImedian"]) +
+  labs(x = "SPI Median") +
+  theme_bw(base_size = 10) +
+   theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(),
+    axis.text = element_text()
+  ) +
+  annotate("text", x = -Inf, y = Inf, label = "(b)", hjust = -1, vjust = 2, size = 4)
+
+# Partial effect plot for WoodyHeight
+woody_height_df$WoodyHeight_original <- back_transform_0_100(
+  scaled = woody_height_df$WoodyHeight,
+  min_val = min_values["WoodyHeight"],
+  max_val = max_values["WoodyHeight"]
+)
+
+p3 <- ggplot(woody_height_df, aes(x = WoodyHeight_original, y = .estimate)) +
+  geom_line(color = colors["WoodyHeight"],linetype = "dashed", linewidth = 1) +
+  geom_ribbon(aes(ymin = .estimate - 2 * .se, ymax = .estimate + 2 * .se),
+              alpha = 0.2, fill = colors["WoodyHeight"]) +
+  labs(x = "Woody Height (m)") +
+  theme_bw(base_size = 10) +
+   theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(),
+    axis.text = element_text()
+  ) +
+  annotate("text", x = -Inf, y = Inf, label = "(c)", hjust = -1, vjust = 2, size = 4)
+
+# Arrange all three plots in a single figure
+# combined_pond_plot <- grid.arrange(p1, p2, p3, nrow = 3)
+```
+
+## 6.2 Add zero-crossings 
+```{r}
+# Add a column for the sign of .estimate
+woody_height_df$sign <- sign(woody_height_df$.estimate)
+
+# Find rows where the sign changes (zero-crossings)
+zero_crossings <- which(diff(woody_height_df$sign) != 0)
+
+# Function to interpolate zero-crossings
+find_zero_crossings <- function(x1, x2, y1, y2) {
+  return(x1 - y1 * (x2 - x1) / (y2 - y1))
+}
+
+# Interpolate zero-crossing values
+zero_points_scaled <- mapply(
+  find_zero_crossings,
+  x1 = woody_height_df$WoodyHeight[zero_crossings],
+  x2 = woody_height_df$WoodyHeight[zero_crossings + 1],
+  y1 = woody_height_df$.estimate[zero_crossings],
+  y2 = woody_height_df$.estimate[zero_crossings + 1]
+)
+
+# Back-transform scaled zero-crossing points
+zero_points_original <- back_transform_0_100(
+  scaled = zero_points_scaled,
+  min_val = min_values["WoodyHeight"],
+  max_val = max_values["WoodyHeight"]
+)
+
+print(zero_points_original)
+
+# Function to find zero-crossings and back-transform
+find_zero_crossings_for_predictor <- function(smooth_df, predictor_name) {
+  # Add sign column for detecting sign changes
+  smooth_df$sign <- sign(smooth_df$.estimate)
+  
+  # Identify zero-crossings (rows where the sign changes)
+  zero_crossings <- which(diff(smooth_df$sign) != 0)
+  
+  # Interpolate to find exact zero-crossing points (scaled)
+  zero_points_scaled <- mapply(
+    find_zero_crossings,
+    x1 = smooth_df[[predictor_name]][zero_crossings],
+    x2 = smooth_df[[predictor_name]][zero_crossings + 1],
+    y1 = smooth_df$.estimate[zero_crossings],
+    y2 = smooth_df$.estimate[zero_crossings + 1]
+  )
+  
+  # Back-transform to original scale
+  zero_points_original <- back_transform_0_100(
+    scaled = zero_points_scaled,
+    min_val = min_values[predictor_name],
+    max_val = max_values[predictor_name]
+  )
+  
+  return(zero_points_original)
+}
+
+# List of predictors
+predictors <- c("WoodyHeight", "DamLength", "SPImedian")
+
+# Initialize a list to store results
+zero_crossings_list <- list()
+
+# Loop through predictors and calculate zero-crossings
+for (predictor in predictors) {
+  # Extract smooth estimates for the predictor
+  smooth_df <- gratia::smooth_estimates(gam_pond_simplified, smooth = paste0("s(", predictor, ")"))
+  
+  # Add original values to smooth_df
+  smooth_df[[paste0(predictor, "_original")]] <- back_transform_0_100(
+    scaled = smooth_df[[predictor]],
+    min_val = min_values[predictor],
+    max_val = max_values[predictor]
+  )
+  
+  # Find zero-crossings and store results
+  zero_crossings_list[[predictor]] <- find_zero_crossings_for_predictor(
+    smooth_df = smooth_df,
+    predictor_name = predictor
+  )
+}
+
+# Print zero-crossings for all predictors
+print(zero_crossings_list)
+
+# Define colors for predictors
+colors <- c("WoodyHeight" = "green", "DamLength" = "blue", "SPImedian" = "red")
+
+# Function to limit zero-crossings to a maximum of two
+limit_zero_crossings <- function(zero_points, max_crossings = 2) {
+  if (length(zero_points) > max_crossings) {
+    return(zero_points[1:max_crossings])  # Keep only the first `max_crossings` points
+  }
+  return(zero_points)  # Return all if fewer than `max_crossings`
+}
+
+# Zero-crossings for DamLength
+dam_length_zero_points <- limit_zero_crossings(zero_crossings_list$DamLength, max_crossings = 2)
+
+# Plot for DamLength
+p1 <- ggplot(dam_length_df, aes(x = DamLength_original, y = .estimate)) +
+  geom_line(color = colors["DamLength"], linetype = "dashed", linewidth = 1) +
+  geom_ribbon(aes(ymin = .estimate - 2 * .se, ymax = .estimate + 2 * .se), 
+              alpha = 0.2, fill = colors["DamLength"]) +
+  # geom_vline(xintercept = dam_length_zero_points, color = "black", linetype = "dashed") +
+  annotate("text", x = dam_length_zero_points, y = 0, label = round(dam_length_zero_points, 2), 
+           color = "black", vjust = -1, size = 3) +
+  labs(title = "Partial effects of significant predictors on log-transformed pond area", 
+       x = "Dam Length (m)") +
+  theme_bw(base_size = 10) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(),
+    axis.text = element_text()
+  ) +
+  annotate("text", x = -Inf, y = Inf, label = "(a)", hjust = -1, vjust = 2, size = 4)+
+  geom_hline(yintercept = 0, color = "black", linetype = "solid")
+
+# Zero-crossings for SPImedian
+spi_median_zero_points <- limit_zero_crossings(zero_crossings_list$SPImedian, max_crossings = 2)
+
+# Plot for SPImedian
+p2 <- ggplot(spi_median_df, aes(x = SPImedian_original, y = .estimate)) +
+  geom_line(color = colors["SPImedian"], linetype = "dashed", linewidth = 1) +
+  geom_ribbon(aes(ymin = .estimate - 2 * .se, ymax = .estimate + 2 * .se), 
+              alpha = 0.2, fill = colors["SPImedian"]) +
+  # geom_vline(xintercept = spi_median_zero_points, color = "black", linetype = "dashed") +
+  annotate("text", x = spi_median_zero_points, y = 0, label = round(spi_median_zero_points, 2), 
+           color = "black", vjust = -1, size = 3) +
+  labs(x = "SPI Median") +
+  theme_bw(base_size = 10) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(),
+    axis.text = element_text()
+  ) +
+  annotate("text", x = -Inf, y = Inf, label = "(b)", hjust = -1, vjust = 2, size = 4)+
+  geom_hline(yintercept = 0, color = "black",linetype = "solid")  # Adjust size for boldness
+
+# Zero-crossings for WoodyHeight
+woody_height_zero_points <- limit_zero_crossings(zero_crossings_list$WoodyHeight, max_crossings = 2)
+
+# Plot for WoodyHeight
+p3 <- ggplot(woody_height_df, aes(x = WoodyHeight_original, y = .estimate)) +
+  geom_line(color = colors["WoodyHeight"], linetype = "dashed", linewidth = 1) +
+  geom_ribbon(aes(ymin = .estimate - 2 * .se, ymax = .estimate + 2 * .se), 
+              alpha = 0.2, fill = colors["WoodyHeight"]) +
+  # geom_vline(xintercept = woody_height_zero_points, color = "black", linetype = "dashed") +
+  annotate("text", x = woody_height_zero_points, y = 0, label = round(woody_height_zero_points, 2), 
+           color = "black", vjust = -1, size = 3) +
+  labs(x = "Woody Height (m)") +
+  theme_bw(base_size = 10) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(),
+    axis.text = element_text()
+  ) +
+  annotate("text", x = -Inf, y = Inf, label = "(c)", hjust = -1, vjust = 2, size = 4)+
+  geom_hline(yintercept = 0, color = "black", linetype = "solid")
+
+# Combine all plots into one figure
+combined_pond_plot <- plot_grid(
+  p1, p2, p3, 
+  # labels = c("(a)", "(b)", "(c)"),  # Add labels for subplots
+  ncol = 1,  # Arrange plots in a single column
+  align = "v",  # Align vertically
+  label_size = 14  # Adjust label size
+)
+
+combined_pond_plot
+```
+
+```{r}
+# Save the plot
+# fname <- paste0(outfig, '/pond_partial_effects_crossing.png')
+# ggsave(filename = fname, plot = combined_pond_plot, dpi = 600, width = 6.5, units = 'in')
+```
+

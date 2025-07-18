@@ -2,7 +2,9 @@
 title: "Distribution of beaver pond area across level III ecoregions"
 author: "Luwen Wan"
 date: "2024-11-12"
-output: html_document
+output:
+  html_document:
+    self_contained: true
 editor_options: 
   chunk_output_type: console
 ---
@@ -20,15 +22,9 @@ library(sf)
 library(dplyr)
 library(tidyr)
 library(viridis)
-library(ggpubr)
-library(Metrics)
-library(ggpmisc)
-library(ggrepel)
-library(ggpubr) # for stat_compare_means
-library(ggrepel) # provides functions to automatically adjust label positions to prevent overlap
 library(readr)
-library(ggspatial)
-library(mgcv) 
+library(ggsignif)
+
 
 formula <- y ~ x # needed for ggpmisc's equation and R2 text
 # Define the Albers Equal Area Conic CRS appropriate for CONUS
@@ -39,16 +35,14 @@ outdir <- "H:/My Drive/Projects/Beavers/Beaver_EarthEngine/BeaverPonds/OutFigs"
 outfig <- "H:/My Drive/Manuscript/BeavePond_westernUS/Figs"
 ```
 
-# 3.0 start here - save to save time 
+# 1. load data 
 ```{r}
-# save(pond_polygon_eco_cluster, file = paste0(outdir,"/pond_polygon_eco_cluster.RData"))
 load(paste0(outdir,"/pond_polygon_eco_cluster.RData"))
 pond_polygon_eco_cluster_df <- st_drop_geometry(pond_polygon_eco_cluster)
 ```
 
 
-# 3. plot ponds in ecoregions 
-## 3.0 pond and ecoregion for table S1
+# 2. get ponds data in ecoregions 
 ```{r}
 names(pond_polygon_eco_cluster_df)
 pond_eco <- pond_polygon_eco_cluster_df[,c("FolderPath","Name","NA_L3CODE","NA_L3NAME")]
@@ -58,17 +52,8 @@ level_dam <- pond_polygon_eco_cluster_df[,c("DamID","pondsAream2","NA_L3CODE","N
 level_dam_unique <- unique(level_dam)
 ```
 
-## 3.3 level III ecoregion (US or NA is the same)
+# 3. plot 
 ```{r}
-# Define ecoregion colors with descriptive names including codes
-ecoregion_colors <- c(
-  "Wyoming Basin (10.1.4)" = "#e78ac3",    
-  "Northwestern Glaciated Plains (9.3.1)" = "#a6d854",  
-  "Southern Rockies (6.2.14)" = "#fc8d62",  
-  "Canadian Rockies (6.2.4)" = "#8da0cb",   
-  "Eastern Cascades Slopes and Foothills (6.2.8)" = "#66c2a5" 
-)
-
 # Update ecoregion labels to include both name and code
 ecoregion_labels <- c(
   "10.1.4" = "Wyoming Basin (10.1.4)",
@@ -116,9 +101,12 @@ ggplot(level_dam_unique, aes(x = NA_L3CODE, y = log10(pondsAream2), fill = Ecore
     legend.box = "horizontal"  # Arrange legend horizontally 
   ) +
   guides(fill = guide_legend(nrow = 3, byrow = TRUE)) + 
-  # scale_fill_manual(values = ecoregion_colors) +
   scale_fill_manual(
-    values = ecoregion_colors,
+    values = c("Wyoming Basin (10.1.4)" = "#e78ac3",    
+               "Northwestern Glaciated Plains (9.3.1)" = "#a6d854",  
+               "Southern Rockies (6.2.14)" = "#fc8d62",  
+               "Canadian Rockies (6.2.4)" = "#8da0cb",   
+               "Eastern Cascades Slopes and Foothills (6.2.8)" = "#66c2a5"),
     breaks = c(
       "Canadian Rockies (6.2.4)",
       "Eastern Cascades Slopes and Foothills (6.2.8)",
@@ -144,11 +132,10 @@ ggplot(level_dam_unique, aes(x = NA_L3CODE, y = log10(pondsAream2), fill = Ecore
 
 ```
 
-## 3.4. save plot - ecoregion 
-
+# 4. save plot 
 ```{r}
-fname <- paste0(outfig,'/ecoregion_level_III.png'); fname
-ggsave(filename = fname, plot = last_plot(), dpi = 600, width = 6.5, units = 'in')
+# fname <- paste0(outfig,'/ecoregion_level_III.png')
+# ggsave(filename = fname, plot = last_plot(), dpi = 600, width = 6.5, units = 'in')
 ```
 
 
