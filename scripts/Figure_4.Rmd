@@ -226,15 +226,15 @@ importance_df_pond  <- data.frame(
 pond_order <- ggplot(importance_df_pond, aes(x = reorder(Predictor, F_value), y = F_value)) +
   geom_bar(stat = "identity", fill = "#0070FF", width = 0.5) +
   coord_flip() +
-  geom_text(aes(label = paste("EDF =", round(EDF, 2), Significance)), hjust = 1, size = 3) +
+  geom_text(aes(label = paste("EDF =", round(EDF, 2), Significance)), hjust = -0.05, size = 3) +
   labs(title = "(a) Factor contributions to log-transformed pond area", 
-     # x = "Predictor", 
-     y = "F-value") +
+       y = "F-value") +
   theme_bw(base_size = 12) +
-  scale_y_continuous(trans = "log1p") +
+  scale_y_continuous(breaks = seq(0, 30, by = 5),  # Ticks every 5 units
+                     expand = expansion(mult = c(0, 0.2))) +  # Extra space for labels
   theme(plot.title = element_text(hjust = 0.5),
         axis.title.y = element_blank())
-
+# pond_order
 ```
  
 ## 4.3 model 1c - reduced pond model 
@@ -482,15 +482,16 @@ print(importance_df)
 dam_order <- ggplot(importance_df, aes(x = reorder(Predictor, F_value), y = F_value)) +
   geom_bar(stat = "identity", fill = "#ff8f00",width = 0.5) +
   coord_flip() +
-  geom_text(aes(label = paste("EDF =", round(EDF, 2), Significance)), hjust = 1, size = 3) +
+  geom_text(aes(label = paste("EDF =", round(EDF, 2), Significance)), hjust = -0.05, size = 3) +
   labs(title = "(b) Factor contributions to log-transformed dam length", 
      # x = "Predictor", 
      y = "F-value") +
   theme_bw(base_size = 12) +
-  scale_y_continuous(trans = "log1p") +
+  scale_y_continuous(breaks = seq(0, 40, by = 5),  # Ticks every 5 units
+                     expand = expansion(mult = c(0, 0.2))) +  # Extra space for labels
   theme(plot.title = element_text(hjust = 0.5),
         axis.title.y = element_blank())
-
+# dam_order
 ```
 
 # 4&5. merge pond and dam order 
@@ -529,5 +530,6 @@ print(combined_plot)
 ```{r}
 # Save the plot
 # fname <- paste0(outfig, '/var_importance_update.png')
+# fname <- paste0(outfig, '/var_importance_update.pdf')
 # ggsave(filename = fname, plot = combined_plot, dpi = 600, width = 7, units = 'in')
 ```
