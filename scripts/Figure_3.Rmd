@@ -1,0 +1,195 @@
+---
+title: "Scaling relationship between dam length and pond area"
+author: "Luwen Wan"
+date: "2024-10-08"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+
+```{r}
+rm(list = ls())
+# Load required libraries
+library(sf)
+library(readr)
+library(dplyr)
+library(ggplot2) # for plotting
+library(ggpubr)  # for publication-ready plots
+
+# directory 
+base_dir <- "H:/My Drive/Projects/Beavers/Beaver_EarthEngine"
+indirPond <- file.path(base_dir, "BeaverPonds/OutFigs")
+outdir <- file.path(base_dir, "RFanalysis_clusters/outputs")
+outfig <- "H:/My Drive/Manuscript/BeavePond_westernUS/Figs"
+```
+
+# 1. load input data 
+```{r}
+load(paste0(indirPond,"/pond_polygon_eco_cluster.RData"))
+load(paste0(outdir,"/merged_pond_var_update.RData"))
+load(paste0(indirPond,"/pond_cluster_eco_uni.RData"))
+```
+
+# 2. Prepare dataset: select relevant columns and merge with ecoregion info
+```{r}
+dam_pond <- merged_pond_var_update %>%
+  select(ClusterID, DamLenMcluster, pondAream2cluster)
+
+dam_pond_eco <- dam_pond %>%
+  left_join(pond_cluster_eco_uni, by = "ClusterID")
+
+# Add predicted pond areas based on theoretical models
+dam_pond_eco_update <- dam_pond_eco %>%
+  mutate(
+    HalfCircleArea = (pi / 8) * DamLenMcluster^2,     # Semicircle model
+    EllipseArea = 10.628 * DamLenMcluster            # Elongated ellipse model
+  )
+```
+
+# 3. plot 
+```{r}
+custom_theme <- theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid = element_blank(),
+    legend.justification = c(0, 1),
+    legend.position = c(0.03, 0.97),
+    legend.text = element_text(size = 8),
+    legend.spacing.y = unit(0.3, "cm"),
+    legend.key.width = unit(1.2, "cm")
+  )
+
+# Compute model predictions and derived areas
+dam_pond_eco_update <- dam_pond_eco %>%
+  mutate(
+    HalfCircleArea = (pi / 8) * (DamLenMcluster^2),
+    EllipseArea = 10.628 * DamLenMcluster
+  )
+
+# Mapping NA_L3CODE to descriptive names
+ecoregion_labels <- c(
+  "10.1.4" = "Wyoming Basin",
+  "9.3.1" = "Northwestern Glaciated Plains",
+  "6.2.14" = "Southern Rockies",
+  "6.2.4" = "Canadian Rockies",
+  "6.2.8" = "Eastern Cascades Slopes and Foothills"
+)
+
+
+# Define ecoregion colors with descriptive names
+ecoregion_colors <- c(
+  "Wyoming Basin" = "#e78ac3",    
+  "Northwestern Glaciated Plains" = "#a6d854",  
+  "Southern Rockies" = "#fc8d62",  
+  "Canadian Rockies" = "#8da0cb",   
+  "Eastern Cascades Slopes and Foothills" = "#66c2a5" 
+)
+
+dam_pond_eco_update$Ecoregion <- dplyr::recode(dam_pond_eco_update$NA_L3CODE, !!!ecoregion_labels)
+
+ecoregion_counts <- dam_pond_eco_update %>%
+  group_by(Ecoregion) %>%
+  summarise(n = n())
+
+# Create a named vector: "Wyoming Basin" → "Wyoming Basin (n = 200)"
+new_ecoregion_labels <- paste0(ecoregion_counts$Ecoregion, " (n = ", ecoregion_counts$n, ")")
+names(new_ecoregion_labels) <- ecoregion_counts$Ecoregion
+
+ggplot(dam_pond_eco_update, aes(x = log(DamLenMcluster), y = log(pondAream2cluster))) +
+  # Ecoregion-colored points
+  geom_point(aes(color = Ecoregion), size = 2) +
+  scale_color_manual(
+  name = "Ecoregion",
+  values = ecoregion_colors,
+  labels = new_ecoregion_labels   # <-- New labels with counts!
+) +
+
+  # Model lines by linetype (fixed color for each)
+  geom_smooth(method = "lm", formula = y ~ x,
+              aes(linetype = "Empirical model"), color = "#1c8041",
+              se = TRUE, size = 1, fill = "gray90") +
+  
+  geom_line(aes(y = log(HalfCircleArea), linetype = "Semicircle model"),
+            color = "#e41a1c", linewidth = 1.2) +
+  
+  geom_line(aes(y = log(EllipseArea), linetype = "Elongated ellipse model"),
+            color = "#501d8a", linewidth = 1) +
+
+  # Annotations
+  annotate("text", x = 6.8, y = 16, 
+           label = "ln(A) = -0.934 + 2 ln(L)", 
+           color = "#e41a1c", size = 4, hjust = 0) +
+  
+  annotate("text", x = 6.8, y = 11, 
+           label = "A = 10.63 * L", 
+           color = "#501d8a", size = 4, hjust = 0) +
+  
+  annotate("text", x = 6.8, y = 5, 
+           label = "ln(A) = 2.372 + 0.964 * ln(L)\nR² = 0.629, p < 0.001", 
+           color = "#1c8041", size = 4, hjust = 0) +
+
+  # Manual scales
+  scale_color_manual(
+    name = "Ecoregion",
+    values = ecoregion_colors,
+    labels = new_ecoregion_labels
+  ) +
+  
+  scale_linetype_manual(
+    name = "Model",
+    values = c(
+      "Empirical model" = "solid",
+      "Semicircle model" = "dotted",
+      "Elongated ellipse model" = "dashed"
+    ),
+    breaks = c("Empirical model", "Elongated ellipse model", "Semicircle model")
+  ) +
+
+  # Labels and theme
+  labs(
+    title = "Scaling relationship between dam length and pond area",
+    x = "Natural log of dam length (m)",
+    y = "Natural log of pond area (m²)"
+  ) +
+  coord_cartesian(clip = "off") +  # allows annotations outside margin if needed
+
+ #  Manually add legends with annotation_custom (optional) or patch them inside using guides
+  guides(
+    color = guide_legend(
+      title = "Ecoregion",
+      override.aes = list(size = 2), # # set the point size in the legend
+      label.position = "right",
+      title.position = "top",
+    ),
+
+    linetype = guide_legend(
+      title = "Model",
+      override.aes = list(color = c("#1c8041", "#501d8a", "#e41a1c")),
+      label.position = "right",
+      title.position = "top"
+    )
+  ) +
+  custom_theme
+```
+
+
+```{r}
+# fname <- paste0(outfig, '/pond_dam_power_law_ellipse_n.png');fname
+# ggplot2::ggsave(filename = fname, plot = last_plot(), dpi = 600, width = 6.5, height = 7, units = 'in')
+```
+
+
+```{r}
+# Add cartons for Figure 3 in the powerpoint later. 
+```
+
+
+
+
+
+
